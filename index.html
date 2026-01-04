@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rotate glTF by Device Tilt — Startup Fallback</title>
+
+  <style>
+    html,body { height:100%; margin:0; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial; }
+    #container { width:100%; height:100vh; position:relative; overflow:hidden; }
+    canvas { width:100%; height:100%; display:block; }
+
+    .ui {
+      position:absolute;
+      left:12px;
+      top:12px;
+      z-index:10;
+      background:rgba(255,255,255,0.96);
+      padding:10px;
+      border-radius:10px;
+      box-shadow:0 8px 20px rgba(0,0,0,0.12);
+      max-width:340px;
+    }
+
+    .hint { font-size:13px; color:#222; }
+    .status { margin-top:8px; font-size:12px; color:#444; }
+
+    .controls {
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      margin-top:8px;
+    }
+
+    button,input[type=file] {
+      padding:6px 8px;
+      border-radius:6px;
+      border:1px solid #ddd;
+      background:#fff;
+      cursor:pointer;
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.158.0/build/three.module.js"
+    }
+  }
+  </script>
+</head>
+
+<body>
+<div id="container">
+  <div class="ui">
+    <div class="hint">
+      Tilt phone to rotate model.<br>
+      Desktop: move mouse.<br>
+      Local model auto-loads on startup.
+    </div>
+
+    <div class="controls">
+      <button id="loadLocal">Load local model</button>
+      <button id="loadCDN">Load CDN model</button>
+      <button id="spawnCube">Spawn cube</button>
+      <button id="enableMotion">Enable motion</button>
+    </div>
+
+    <input id="file" type="file" accept=".glb,.gltf" />
+    <div id="status" class="status">Ready.</div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'https://unpkg.com/three@0.158.0/examples/jsm/loaders/GLTFLoader.js';
+
+const container = document.getElementById('container');
+const statusEl = document.getElementById('status');
+const setStatus = msg => { statusEl.textContent = msg; console.log(msg); };
+
+// Scene
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf3f3f3);
+
+const camera = new THREE.PerspectiveCamera(
+  45,
+  container.clientWidth / container.clientHeight,
+  0.1,
+  1000
+);
+camera.position.set(0, 1.2, 3);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(container.clientWidth, container.clientHeight);
+renderer.setPixelRatio(window.devicePixelRatio || 1);
+renderer.outputEncoding = THREE.sRGBEncoding;
+container.appendChild(renderer.domElement);
+
+// Lights
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.8));
+const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+dir.position.set(3, 10, 10);
+scene.add(dir);
+
+// Ground
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(20, 20),
+  new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.95 })
+);
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+// Model setup
+const loader = new GLTFLoader();
+const modelHolder = new THREE.Object3D();
+scene.add(modelHolder);
+let model = null;
+
+function clearModel() {
+  if (!model) return;
+  modelHolder.remove(model);
+  model.traverse(c => {
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) {
+      Array.isArray(c.material)
+        ? c.material.forEach(m => m.dispose())
+        : c.material.dispose();
+    }
+  });
+  model = null;
+}
+
+function centerAndScale(obj, size = 1.6) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const s = new THREE.Vector3();
+  box.getSize(s);
+  const scale = size / Math.max(s.x, s.y, s.z);
+  obj.scale.setScalar(scale);
+  box.setFromObject(obj);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  obj.position.copy(center.negate());
+}
+
+// ---------- FALLBACK LOADER ----------
+async function loadModelWithFallback(urls) {
+  clearModel();
+  setStatus('Starting model load...');
+
+  for (const url of urls) {
+    setStatus('Trying: ' + url);
+    try {
+      await new Promise((resolve, reject) => {
+        loader.load(
+          url,
+          gltf => {
+            model = gltf.scene || gltf.scenes[0];
+            centerAndScale(model);
+            modelHolder.add(model);
+            setStatus('Loaded: ' + url);
+            resolve();
+          },
+          undefined,
+          err => reject(err)
+        );
+      });
+      return true;
+    } catch (err) {
+      console.warn('Failed:', url, err);
+    }
+  }
+
+  spawnCube();
+  setStatus('All loads failed — showing cube.');
+  return false;
+}
+
+// URLs
+const LOCAL_MODEL_URL = './cube_rotate_test.glb';
+const CDN_MODEL_URL =
+  'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
+
+const STARTUP_MODEL_URLS = [
+  LOCAL_MODEL_URL,
+  CDN_MODEL_URL
+];
+
+// Cube fallback
+function spawnCube() {
+  clearModel();
+  model = new THREE.Mesh(
+    new THREE.BoxGeometry(),
+    new THREE.MeshStandardMaterial({ color:0x4488ff })
+  );
+  centerAndScale(model);
+  modelHolder.add(model);
+}
+
+// Buttons
+document.getElementById('loadLocal').onclick =
+  () => loadModelWithFallback([LOCAL_MODEL_URL]);
+
+document.getElementById('loadCDN').onclick =
+  () => loadModelWithFallback([CDN_MODEL_URL]);
+
+document.getElementById('spawnCube').onclick = spawnCube;
+
+// File input
+document.getElementById('file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  loadModelWithFallback([url]).then(() => {
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  });
+});
+
+// Tilt / mouse rotation
+const target = new THREE.Vector2();
+const current = new THREE.Vector2();
+
+function handleOrientation(e) {
+  if (e.beta == null || e.gamma == null) return;
+  target.x = ((e.beta + 180) / 360 - 0.5) * Math.PI * 0.25;
+  target.y = ((e.gamma + 90) / 180 - 0.5) * Math.PI * 0.9;
+}
+
+renderer.domElement.addEventListener('pointermove', e => {
+  const r = renderer.domElement.getBoundingClientRect();
+  target.y = ((e.clientX - r.left) / r.width - 0.5) * Math.PI * 0.7;
+  target.x = ((e.clientY - r.top) / r.height - 0.5) * Math.PI * 0.2;
+});
+
+// iOS motion permission
+async function enableMotion() {
+  if (typeof DeviceMotionEvent?.requestPermission === 'function') {
+    const res = await DeviceMotionEvent.requestPermission();
+    if (res === 'granted') {
+      window.addEventListener('deviceorientation', handleOrientation);
+      setStatus('Motion enabled.');
+    } else {
+      setStatus('Motion denied.');
+    }
+  } else {
+    window.addEventListener('deviceorientation', handleOrientation);
+    setStatus('Motion enabled.');
+  }
+}
+
+document.getElementById('enableMotion').onclick = enableMotion;
+
+// Zoom
+renderer.domElement.addEventListener('wheel', e => {
+  e.preventDefault();
+  camera.position.z = Math.max(0.8, Math.min(10, camera.position.z + e.deltaY * 0.003));
+}, { passive:false });
+
+// Render loop
+function animate() {
+  requestAnimationFrame(animate);
+  current.lerp(target, 0.08);
+  modelHolder.rotation.x = current.x;
+  modelHolder.rotation.y = current.y;
+  renderer.render(scene, camera);
+}
+animate();
+
+// Resize
+window.addEventListener('resize', () => {
+  camera.aspect = container.clientWidth / container.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(container.clientWidth, container.clientHeight);
+});
+
+// ✅ AUTO-LOAD ON STARTUP
+loadModelWithFallback(STARTUP_MODEL_URLS);
+</script>
+</body>
+</html>
